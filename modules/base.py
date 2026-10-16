@@ -64,6 +64,8 @@ class OwaspCategory(Enum):
     A10_SSRF = "A10:2021 - Server-Side Request Forgery (SSRF)"
     VIBE_CODING_PATTERNS = "VIBE-CODING - Vazamentos e Padrões Inseguros de IA"
     API_SECURITY_TOP_10 = "OWASP API:2023 - Segurança de APIs"
+    MULTI_TENANT_RLS = "MULTI-TENANT & RLS - Isolamento de Dados e BOLA/IDOR"
+    OWASP_LLM_TOP_10 = "OWASP LLM:2025 - Segurança de IA e Modelos de Linguagem"
 
 
 @dataclass

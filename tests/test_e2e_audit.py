@@ -97,10 +97,25 @@ class TestEndToEndAudit(unittest.TestCase):
         self.assertTrue(any("VIBE-SECRET-OPENAI-KEY" in i for i in finding_ids))
         self.assertTrue(any("SEC-A08-MISSING-SRI-SCRIPTS" in i for i in finding_ids))
 
+        # Verifica os novos módulos OWASP Top 10 (A04, A06, A09, A10)
+        self.assertIn("SEC-A04-CLIENT-SIDE-TRUST-PRICING", finding_ids)
+        self.assertIn("SEC-A04-MISSING-BOT-PROTECTION", finding_ids)
+        self.assertIn("SEC-A06-VULNERABLE-JS-LIBRARY", finding_ids)
+        self.assertIn("SEC-A09-SENSITIVE-CONSOLE-LOGGING", finding_ids)
+        self.assertIn("SEC-A09-SILENT-ERROR-SWALLOWING", finding_ids)
+        self.assertIn("SEC-A10-CLIENT-REMOTE-FETCH-PROXY", finding_ids)
+        self.assertIn("SEC-A10-INTERNAL-INFRA-REFERENCE", finding_ids)
+
         # Verifica falhas do Módulo API Sentinel (OWASP API Top 10)
         self.assertIn("API-A08-OPENAPI-EXPOSED", finding_ids)
         self.assertIn("API-A08-GRAPHQL-INTROSPECTION-ENABLED", finding_ids)
         self.assertIn("API-A03-EXCESSIVE-DATA-EXPOSURE", finding_ids)
+
+        # Verifica falhas dos Módulos Especializados (Multi-Tenant RLS & OWASP LLM Top 10)
+        self.assertIn("RLS-03-DIRECT-DB-QUERY-EXPOSURE", finding_ids)
+        self.assertIn("RLS-04-CROSS-TENANT-DATA-LEAK", finding_ids)
+        self.assertIn("LLM06-DIRECT-LLM-API-AND-TOOLS", finding_ids)
+        self.assertIn("LLM07-SYSTEM-PROMPT-EXPOSED", finding_ids)
 
         # O score deve ter caído para nível F dada a severidade das falhas
         self.assertEqual(summary["score"], 0)

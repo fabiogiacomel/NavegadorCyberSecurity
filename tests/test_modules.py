@@ -12,6 +12,12 @@ from modules.vibe_coding_leaks import VibeCodingLeaksModule
 from modules.a02_crypto_failures import CryptographicFailuresModule
 from modules.a08_integrity import SoftwareIntegrityModule
 from modules.a01_broken_access import BrokenAccessControlModule
+from modules.a04_insecure_design import InsecureDesignModule
+from modules.a06_vulnerable_components import VulnerableComponentsModule
+from modules.a09_logging_monitoring import LoggingAndMonitoringModule
+from modules.a10_ssrf import ServerSideRequestForgeryModule
+from modules.multi_tenant_rls_auditor import MultiTenantRlsAuditorModule
+from modules.llm_ai_security_auditor import LlmAiSecurityAuditorModule
 from core.audit_engine import AuditEngine
 from core.report_generator import ReportGenerator
 
@@ -482,6 +488,185 @@ class TestSecurityModules(unittest.TestCase):
         self.assertIn("MD5", evidence)
         self.assertIn("btoa", evidence)
         self.assertIn("Math.random", evidence)
+
+    def test_a04_insecure_design_pricing_bot_and_upload(self):
+        mod = InsecureDesignModule()
+        ctx = AuditContext(
+            url="https://loja.com/checkout",
+            html="""
+            <html>
+                <body>
+                    <form action="/api/checkout" method="POST">
+                        <input type="hidden" name="total_price" value="199.90">
+                        <input type="hidden" name="is_admin" value="false">
+                        <input type="file" name="comprovante">
+                        <button type="submit">Pagar</button>
+                    </form>
+                </body>
+            </html>
+            """,
+            scripts=[
+                "fetch('/api/orders', { method: 'POST', body: JSON.stringify({ ...user, totalPrice: 10 }) });"
+            ]
+        )
+        findings = mod.run(ctx)
+        ids = [f.id for f in findings]
+        self.assertIn("SEC-A04-CLIENT-SIDE-TRUST-PRICING", ids)
+        self.assertIn("SEC-A04-MISSING-BOT-PROTECTION", ids)
+        self.assertIn("SEC-A04-UNRESTRICTED-FILE-UPLOAD", ids)
+
+    def test_a04_safe_form_with_turnstile_and_restricted_upload(self):
+        mod = InsecureDesignModule()
+        ctx = AuditContext(
+            url="https://loja.com/login",
+            html="""
+            <html>
+                <body>
+                    <form action="/login" method="POST">
+                        <input type="text" name="email">
+                        <div class="cf-turnstile" data-sitekey="1x0000"></div>
+                        <input type="file" name="avatar" accept=".png,.jpg">
+                    </form>
+                </body>
+            </html>
+            """
+        )
+        findings = mod.run(ctx)
+        self.assertEqual(len(findings), 0)
+
+    def test_a06_vulnerable_components_and_unpinned_cdn(self):
+        mod = VulnerableComponentsModule()
+        ctx = AuditContext(
+            url="https://meusite.com",
+            html="""
+            <html>
+                <head>
+                    <script src="https://cdn.tailwindcss.com"></script>
+                    <script src="https://unpkg.com/lucide@latest"></script>
+                    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/2.1.4/jquery.min.js"></script>
+                    <script src="https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.17.15/lodash.min.js"></script>
+                </head>
+            </html>
+            """,
+            scripts=[
+                "//# sourceMappingURL=bundle.js.map",
+                "const pkg = '/package.json';"
+            ]
+        )
+        findings = mod.run(ctx)
+        ids = [f.id for f in findings]
+        self.assertIn("SEC-A06-VULNERABLE-JS-LIBRARY", ids)
+        self.assertIn("SEC-A06-UNPINNED-EXTERNAL-DEPENDENCY", ids)
+        self.assertIn("SEC-A06-SOURCEMAP-OR-MANIFEST-EXPOSED", ids)
+
+        vuln_lib_finding = [f for f in findings if f.id == "SEC-A06-VULNERABLE-JS-LIBRARY"][0]
+        self.assertIn("jQuery v2.1.4", vuln_lib_finding.evidence)
+        self.assertIn("Lodash v4.17.15", vuln_lib_finding.evidence)
+
+    def test_a09_logging_and_monitoring_failures(self):
+        mod = LoggingAndMonitoringModule()
+        jwt_sample = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123def456ghi789jkl012"
+        ctx = AuditContext(
+            url="https://meusite.com",
+            scripts=[
+                "console.log('User token:', access_token);",
+                "try { validateSession(); } catch (e) {}",
+                "const logUrl = '/actuator/logfile';"
+            ],
+            console_logs=[
+                f"[1] Auth header Bearer {jwt_sample} (app.js:12)"
+            ]
+        )
+        findings = mod.run(ctx)
+        ids = [f.id for f in findings]
+        self.assertIn("SEC-A09-SENSITIVE-CONSOLE-LOGGING", ids)
+        self.assertIn("SEC-A09-SILENT-ERROR-SWALLOWING", ids)
+        self.assertIn("SEC-A09-DEBUG-LOGGING-ENABLED", ids)
+
+    def test_a10_ssrf_vectors_and_metadata(self):
+        mod = ServerSideRequestForgeryModule()
+        ctx = AuditContext(
+            url="https://meusite.com/integrations?webhook_url=https:// cliente.com/hook",
+            html="""
+            <html>
+                <body>
+                    <form action="/api/avatar" method="POST">
+                        <input type="text" name="avatar_url">
+                    </form>
+                </body>
+            </html>
+            """,
+            scripts=[
+                "fetch('/api/proxy?url=http://169.254.169.254/latest/meta-data/iam');",
+                "const internalApi = 'http://10.24.0.15:8080/internal';"
+            ]
+        )
+        findings = mod.run(ctx)
+        ids = [f.id for f in findings]
+        self.assertIn("SEC-A10-POTENTIAL-SSRF-PARAM", ids)
+        self.assertIn("SEC-A10-CLIENT-REMOTE-FETCH-PROXY", ids)
+        self.assertIn("SEC-A10-INTERNAL-INFRA-REFERENCE", ids)
+
+        infra_finding = [f for f in findings if f.id == "SEC-A10-INTERNAL-INFRA-REFERENCE"][0]
+        self.assertEqual(infra_finding.severity, Severity.CRITICAL)
+        self.assertIn("169.254.169.254", infra_finding.evidence)
+
+    def test_multi_tenant_rls_auditor(self):
+        mod = MultiTenantRlsAuditorModule()
+        # Payload Base64URL para {"role":"service_role","iss":"supabase"} -> eyJyb2xlIjoic2VydmljZV9yb2xlIiwiaXNzIjoic3VwYWJhc2UifQ
+        service_role_jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIiwiaXNzIjoic3VwYWJhc2UifQ.fakesignature12345"
+        ctx = AuditContext(
+            url="https://saas.com/dashboard?tenant_id=empresa-alpha",
+            local_storage={"tenant_id": "empresa-alpha"},
+            scripts=[
+                f"const sbKey = '{service_role_jwt}';",
+                "const { data } = await supabase.from('documentos').select('*');",
+                "fetch('/api/pedidos', { headers: { 'X-Tenant-ID': currentTenant } });"
+            ],
+            api_calls=[
+                {
+                    "url": "https://saas.com/api/documentos",
+                    "method": "GET",
+                    "status": 200,
+                    "headers": {},
+                    "response": json.dumps([
+                        {"id": "1", "tenant_id": "tenant-AAA", "titulo": "Doc Alpha"},
+                        {"id": "2", "tenant_id": "tenant-BBB", "titulo": "Doc Beta"}
+                    ])
+                }
+            ]
+        )
+        findings = mod.run(ctx)
+        ids = [f.id for f in findings]
+        self.assertIn("RLS-01-CLIENT-SUPPLIED-TENANT-ID", ids)
+        self.assertIn("RLS-02-SUPABASE-SERVICE-ROLE-BYPASS", ids)
+        self.assertIn("RLS-03-DIRECT-DB-QUERY-EXPOSURE", ids)
+        self.assertIn("RLS-04-CROSS-TENANT-DATA-LEAK", ids)
+
+    def test_owasp_llm_ai_security_auditor(self):
+        mod = LlmAiSecurityAuditorModule()
+        ctx = AuditContext(
+            url="https://ai-chat.com",
+            scripts=[
+                "const res = await fetch('https://api.openai.com/v1/chat/completions', {",
+                "  body: JSON.stringify({",
+                "    model: 'gpt-4o',",
+                "    max_tokens: 16000,",
+                "    messages: [{ role: 'system', content: 'Você é um assistente interno com acesso ao banco.' }],",
+                "    tools: [{ name: 'execute_sql' }]",
+                "  })",
+                "});",
+                "const prompt = `Você é um assistente financeiro. Responda apenas sobre: ${userInput}`;",
+                "chatBox.innerHTML = marked.parse(aiResponse);"
+            ]
+        )
+        findings = mod.run(ctx)
+        ids = [f.id for f in findings]
+        self.assertIn("LLM06-DIRECT-LLM-API-AND-TOOLS", ids)
+        self.assertIn("LLM07-SYSTEM-PROMPT-EXPOSED", ids)
+        self.assertIn("LLM01-CLIENT-PROMPT-CONSTRUCTION", ids)
+        self.assertIn("LLM05-UNSANITIZED-LLM-OUTPUT", ids)
+        self.assertIn("LLM10-UNBOUNDED-MODEL-OR-TOKENS", ids)
 
 
 if __name__ == "__main__":

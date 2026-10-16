@@ -47,6 +47,7 @@ class VulnerableTestHandler(BaseHTTPRequestHandler):
             users_payload = [
                 {
                     "id": 1,
+                    "tenant_id": "tenant-alpha-01",
                     "name": "Administrador do Sistema",
                     "email": "admin@empresa.com.br",
                     "password_hash": "$2b$12$e8Y5fakepasswordhashvibeai1234567890abcdef",
@@ -58,6 +59,7 @@ class VulnerableTestHandler(BaseHTTPRequestHandler):
                 },
                 {
                     "id": 2,
+                    "tenant_id": "tenant-beta-02",
                     "name": "Usuario Comum",
                     "email": "usuario@empresa.com.br",
                     "password_hash": "$2b$12$k9L2fakeuserpasswordhash9988776655443322",
@@ -96,8 +98,9 @@ class VulnerableTestHandler(BaseHTTPRequestHandler):
 <head>
     <meta charset="UTF-8">
     <title>AI Vibe App — Demonstração de Auditoria Completa</title>
-    <!-- Script de CDN externa sem integridade (SRI) -->
+    <!-- Scripts de CDN externa sem integridade (SRI - A08) e com versão vulnerável (Lodash 4.17.15 - A06) -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.17.15/lodash.min.js"></script>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; padding: 30px; }
         .card { background: #1e293b; padding: 24px; border-radius: 12px; max-width: 800px; margin: 0 auto; box-shadow: 0 4px 14px rgba(0,0,0,0.4); border: 1px solid #334155; }
@@ -115,10 +118,10 @@ class VulnerableTestHandler(BaseHTTPRequestHandler):
 <body>
     <div class="card">
         <h1>🚀 Aplicação de Teste (Vibe Coding & API Sentinel)</h1>
-        <p>Esta aplicação demonstra em tempo real as principais falhas do <strong>OWASP Top 10 Web</strong> e <strong>OWASP API Security Top 10:2023</strong>.</p>
+        <p>Esta aplicação demonstra em tempo real as principais falhas do <strong>OWASP Top 10 Web</strong>, <strong>OWASP API Top 10</strong>, <strong>Isolamento Multi-Tenant/RLS</strong> e <strong>OWASP LLM Top 10</strong>.</p>
         
         <div class="alert">
-            ⚠️ <strong>Falhas Ativas:</strong> OpenAPI público (/openapi.json), GraphQL Introspection (/graphql), Excessive Data Exposure (/api/users), ausência de Rate Limiting, Vazamento de Stack Trace (/api/debug), Chave OpenAI no cliente, JWT em LocalStorage e falta de CSP.
+            ⚠️ <strong>Falhas Ativas:</strong> OpenAPI público (/openapi.json), GraphQL Introspection (/graphql), Excessive Data Exposure & Vazamento Cross-Tenant (/api/users), Chave OpenAI & System Prompt expostos no cliente, JWT em LocalStorage, Lodash vulnerável (A06), campo oculto de preço (A04), SSRF/IMDS (A10) e falta de CSP.
         </div>
 
         <div class="api-box">
@@ -128,8 +131,9 @@ class VulnerableTestHandler(BaseHTTPRequestHandler):
             <div id="api-output" style="margin-top: 10px;"></div>
         </div>
 
-        <h3>Formulário de Transferência / Ação (Sem CSRF):</h3>
+        <h3>Formulário de Transferência / Ação (Sem CSRF e com Design Inseguro A04):</h3>
         <form action="/api/transfer" method="POST">
+            <input type="hidden" name="total_price" value="1500.00">
             <input type="text" name="recipient" placeholder="Destinatário" value="usuario_destino">
             <input type="text" name="amount" placeholder="Valor (R$)" value="1500.00">
             <button type="submit">Transferir Fundos</button>
@@ -143,26 +147,36 @@ class VulnerableTestHandler(BaseHTTPRequestHandler):
 
     <!-- Scripts simulando código gerado por IA -->
     <script>
-        // 1. VAZAMENTO VIBE CODING: Chave de API de IA colocada no cliente
+        // 1. VAZAMENTO VIBE CODING & OWASP LLM: Chave de API de IA, System Prompt e endpoint direto no cliente
         const OPENAI_API_KEY = "sk-proj-DEMO1234567890abcdef1234567890abcdef1234567890abcdef";
+        const SYSTEM_PROMPT = "Você é o assistente financeiro corporativo com acesso irrestrito às faturas.";
+        const LLM_DIRECT_URL = "https://api.openai.com/v1/chat/completions";
         const ADMIN_SECRET = "password: 'admin123'";
         const is_admin = true;
 
-        // 2. FALHA A07: JWT armazenado em localStorage em vez de HttpOnly cookie
+        // 2. FALHA A07 & MULTI-TENANT RLS: JWT e tenant_id manipuláveis em localStorage
         localStorage.setItem("auth_token", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMzg0IiwibmFtZSI6IkFkbWluIn0.fake_signature_vibe_coding_demo");
         localStorage.setItem("user_role", "superuser");
+        localStorage.setItem("tenant_id", "tenant-alpha-01");
+        const rlsDirectQuery = () => supabase.from("faturas_clientes").select("*");
 
-        // 3. FALHA A03: Manipulação insegura do DOM com innerHTML
+        // 3. FALHA A09: Vazamento de token sensível no console.log
+        console.log("Debug Session access_token:", localStorage.getItem("auth_token"));
+
+        // 4. FALHA A10: Endpoint de proxy aberto / SSRF e referência a Cloud Metadata IMDS
+        const SSRF_PROXY_PREVIEW = "/api/proxy?url=http://169.254.169.254/latest/meta-data/iam/security-credentials/";
+
+        // 5. FALHA A03: Manipulação insegura do DOM com innerHTML
         const params = new URLSearchParams(window.location.search);
         const userName = params.get("name") || "<b>Usuário Convidado</b>";
         document.getElementById("user-display").innerHTML = "Olá, " + userName;
 
-        // 4. FALHA A03: Uso de eval()
+        // 6. FALHA A03 & A09: Uso de eval() e bloco catch vazio silenciando erros
         try {
             eval("console.log('Ambiente de debug carregado')");
         } catch(e) {}
 
-        // 5. Chamadas de API automáticas para o Sentinel interceptar
+        // 7. Chamadas de API automáticas para o Sentinel interceptar
         async function chamarApiUsuarios() {
             const res = await fetch("/api/users");
             const data = await res.json();

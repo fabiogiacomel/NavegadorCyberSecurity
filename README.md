@@ -40,11 +40,17 @@ NavegadorCyberSecurity/
 │   ├── a01_broken_access.py    # OWASP A01: Quebra de Controle de Acesso & Rotas Sensíveis
 │   ├── a02_crypto_failures.py  # OWASP A02: Falhas Criptográficas & Mixed Content
 │   ├── a03_injection.py        # OWASP A03: Injeção, DOM XSS Sinks & Formulários sem CSRF
+│   ├── a04_insecure_design.py  # OWASP A04: Design Inseguro, Manipulação de Preço & Uploads
 │   ├── a05_misconfiguration.py # OWASP A05: Configuração Insegura (CSP, HSTS, CORS, Banners)
+│   ├── a06_vulnerable_components.py # OWASP A06: Bibliotecas JS Vulneráveis (CVEs) & CDNs sem Versão
 │   ├── a07_auth_failures.py    # OWASP A07: Cookies sem HttpOnly, Tokens em LocalStorage
 │   ├── a08_integrity.py        # OWASP A08: Falhas de Integridade (CDNs sem SRI)
+│   ├── a09_logging_monitoring.py # OWASP A09: Vazamento em console.log & Silenciamento de Erros
+│   ├── a10_ssrf.py             # OWASP A10: Vetores de SSRF, Proxies Abertos & Cloud Metadata
 │   ├── vibe_coding_leaks.py    # Vibe Coding: Detecção de Chaves OpenAI, Supabase, Mock Auth
-│   └── api_security_auditor.py # 🔌 OWASP API Security Top 10 (2023) & API Sentinel
+│   ├── api_security_auditor.py # 🔌 OWASP API Security Top 10 (2023) & API Sentinel
+│   ├── multi_tenant_rls_auditor.py # 🏢 Isolamento Multi-Tenant, BOLA & Supabase/Postgres RLS
+│   └── llm_ai_security_auditor.py  # 🧠 OWASP LLM Top 10 (2025) & Segurança de Agentes IA
 │
 ├── ui/                         # Interface Gráfica
 │   ├── styles.py               # Tema Cyber Dark moderno (QSS)
