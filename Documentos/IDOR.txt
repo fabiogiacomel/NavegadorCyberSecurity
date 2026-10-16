@@ -1,0 +1,1307 @@
+explique o que é isso:  Referência Direta Insegura a Objetos (IDOR)
+
+Referência Direta Insegura a Objetos (Insecure Direct Object Reference ou IDOR) é uma vulnerabilidade de controle de acesso que ocorre quando um sistema expõe a referência direta a um recurso interno (como um identificador no banco de dados, chave ou nome de arquivo) e confia diretamente no valor enviado pelo cliente, sem validar se o usuário autenticado tem permissão para acessar ou manipular aquele objeto.
+
+No ranking OWASP Top 10, o IDOR se enquadra na categoria de Controle de Acesso Quebrado (Broken Access Control), sendo também conhecido no ecossistema de APIs como BOLA (Broken Object Level Authorization).
+
+Como a vulnerabilidade funciona
+O cenário típico ocorre quando a aplicação utiliza identificadores previsíveis (como números sequenciais) em parâmetros de URL, formulários ou payloads JSON.
+
+1. Cenário legítimo
+Um usuário acessa seu próprio perfil ou comprovante na plataforma:
+
+HTTP
+GET /api/fatura?id=1050 HTTP/1.1
+Host: banco.exemplo.com
+Cookie: session_id=token_valido_usuario_A
+O servidor localiza a fatura de ID 1050 e a retorna para o usuário A.
+
+2. Exploração da falha
+O usuário A altera intencionalmente o parâmetro na requisição para o número seguinte:
+
+HTTP
+GET /api/fatura?id=1051 HTTP/1.1
+Host: banco.exemplo.com
+Cookie: session_id=token_valido_usuario_A
+Se o servidor apenas executar uma consulta direta sem checar a titularidade do registro:
+
+SQL
+-- Código vulnerável no backend
+SELECT * FROM faturas WHERE id = 1051;
+A aplicação entregará a fatura pertencente ao usuário B. Como o ID era sequencial, um invasor pode criar um script para iterar de 1 a 100000 e raspar toda a base de dados.
+
+Tipos comuns de IDOR
+Leitura não autorizada: Visualização de dados confidenciais de terceiros (documentos, extratos, mensagens privadas).
+
+Modificação ou exclusão indevida: Requisições POST, PUT ou DELETE onde o ID do recurso é manipulado para alterar a senha, trocar o e-mail ou excluir contas alheias (ex.: POST /usuario/1051/excluir).
+
+Acesso a arquivos no servidor: Parâmetros que referenciam nomes de arquivos no sistema operacional (ex.: GET /download?arquivo=contrato_1050.pdf).
+
+Como prevenir e corrigir
+A raiz do problema não é a exposição do ID, mas a ausência de verificação de propriedade no backend. As melhores práticas incluem:
+
+Validação rígida de autorização por objeto: Nunca confie apenas na autenticação básica (saber quem é o usuário). O sistema precisa verificar se aquele usuário específico possui direito de acesso àquele objeto específico:
+
+SQL
+-- Consulta segura (amarrada ao ID do usuário autenticado na sessão)
+SELECT * FROM faturas WHERE id = :id AND usuario_id = :session_user_id;
+Uso de identificadores não previsíveis: Substitua números sequenciais por UUIDs versão 4 ou hashes aleatórios longos (ex.: f81d4fae-7dec-11d0-a765-00a0c91e6bf6). Isso não substitui a checagem de autorização, mas inviabiliza ataques de enumeração em massa.
+
+Mapeamento indireto de referências: Em vez de enviar chaves reais de banco de dados, use referências temporárias atreladas à sessão do usuário (ex.: mapear itens em uma lista de 1 a 5 apenas dentro da sessão ativa).
+
+Quer ver um exemplo prático de implementação vulnerável e corrigida em código (Node.js ou Python)?
+
+Sim
+quero ver um exemplo vulneravel e corrigido em python
+
+O exemplo abaixo utiliza Flask e um banco de dados relacional (SQLAlchemy) simulando um endpoint de visualização de relatórios médicos ou faturas financeiras.
+
+1. Código vulnerável a IDOR
+O endpoint recebe o documento_id via URL, busca o registro diretamente no banco e o entrega, validando apenas se o usuário está logado, mas ignorando se o recurso pertence a ele.
+
+Python
+from flask import Flask, jsonify, abort
+from flask_login import login_required, current_user
+
+app = Flask(__name__)
+
+@app.route("/documentos/<int:documento_id>", methods=["GET"])
+@login_required
+def obter_documento_vulneravel(documento_id):
+    # FALHA: O backend confia cegamente no ID enviado na URL
+    documento = Documento.query.filter_by(id=documento_id).first()
+    
+    if not documento:
+        abort(404, description="Documento não encontrado")
+
+    # Qualquer usuário autenticado pode acessar os dados de qualquer outro
+    # basta iterar o ID na URL (ex: /documentos/1, /documentos/2...)
+    return jsonify({
+        "id": documento.id,
+        "titulo": documento.titulo,
+        "conteudo": documento.conteudo,
+        "proprietario_id": documento.usuario_id
+    })
+2. Código corrigido
+A correção aplica controle de acesso baseado em contexto de duas formas complementares: vinculando a consulta ao proprietário autenticado na sessão (current_user.id) e adotando identificadores não sequenciais (UUIDv4).
+
+Python
+import uuid
+from flask import Flask, jsonify, abort
+from flask_login import login_required, current_user
+
+app = Flask(__name__)
+
+@app.route("/documentos/<uuid:documento_id>", methods=["GET"])
+@login_required
+def obter_documento_seguro(documento_id):
+    # CORREÇÃO 1: A consulta restringe o escopo ao usuário autenticado na sessão
+    documento = Documento.query.filter_by(
+        id=str(documento_id),
+        usuario_id=current_user.id
+    ).first()
+    
+    # Se o ID pertencer a outro usuário, a consulta não retorna nada
+    if not documento:
+        # Retornar 404 em vez de 403 evita que invasores descubram se o ID realmente existe
+        abort(404, description="Documento não encontrado")
+
+    return jsonify({
+        "id": documento.id,
+        "titulo": documento.titulo,
+        "conteudo": documento.conteudo
+    })
+O que mudou na versão segura
+Escopo amarrado à sessão: A instrução usuario_id=current_user.id garante que o banco de dados nem sequer carregue em memória dados de outro cliente. Mesmo que o invasor envie um ID válido de uma terceira pessoa, o resultado será vazio.
+
+Prevenção de enumeração com UUID: O parâmetro <uuid:documento_id> troca chaves sequenciais (1, 2, 3) por valores aleatórios de 128 bits (ex.: c9bf9e57-1685-4c89-bafb-ff5af830be8a), inviabilizando varreduras por força bruta.
+
+Defesa contra vazamento de metadados: Ao retornar 404 Not Found em vez de 403 Forbidden, a API não confirma a existência de registros de outros usuários na base.
+
+Quer ver como implementar essa verificação em arquiteturas multi-tenant ou com perfis de acesso (RBAC)?
+
+Sim
+Como implementar proteção contra IDOR em sistemas com múltiplos níveis de permissão (RBAC) ou multi-tenant?
+
+Em arquiteturas corporativas, a verificação simples de propriedade direta (usuario_id == current_user.id) não é suficiente. Em ambientes com RBAC (Controle de Acesso Baseado em Papéis) e Multi-tenancy, a proteção contra IDOR exige uma estratégia em duas camadas: isolamento estrutural do inquilino (tenant) e políticas de autorização no nível do objeto.
+
+A falha clássica do RBAC tradicional
+Muitas aplicações cometem o erro de aplicar RBAC apenas nas rotas:
+
+Python
+# ERRO COMUM: Autorização em nível de função, mas não de objeto
+@app.get("/empresas/{tenant_id}/pedidos/{pedido_id}")
+@requer_papel(["GERENTE", "AUDITOR"])
+def ver_pedido(tenant_id: str, pedido_id: str):
+    # Se o usuário for um GERENTE da Empresa A, ele conseguirá 
+    # passar o tenant_id da Empresa B e ler os pedidos dela!
+    return db.query(Pedido).filter_by(id=pedido_id).first()
+O fato de um usuário ter o papel GERENTE não significa que ele possa gerenciar os recursos de qualquer organização ou qualquer equipe.
+
+Camada 1: Isolamento de Tenant (Fronteira Rígida)
+O identificador da organização/inquilino nunca deve vir de um parâmetro modificável pelo cliente sem validação contra o token de autenticação (JWT/Sessão).
+
+1. Injeção de Contexto a partir do Token
+O tenant_id seguro deve ser extraído diretamente da identidade autenticada:
+
+Python
+from fastapi import Depends, HTTPException, status
+from pydantic import BaseModel
+
+class UsuarioAutenticado(BaseModel):
+    id: str
+    tenant_id: str
+    role: str
+
+# Dependência que decodifica o JWT e garante a identidade
+def obter_usuario_sessao(...) -> UsuarioAutenticado:
+    # Decodifica token criptográfico
+    return payload_usuario
+2. Consultas sempre escopadas pelo Tenant
+O banco de dados deve restringir o conjunto de dados ao tenant_id antes de qualquer outra operação:
+
+Python
+# O tenant_id vem da sessão (token), NUNCA do payload da requisição
+pedido = db.query(Pedido).filter(
+    Pedido.id == pedido_id,
+    Pedido.tenant_id == usuario.tenant_id
+).first()
+Camada 2: Autorização em Nível de Objeto (Policy Pattern)
+Para suportar múltiplos níveis de permissão (administradores, gerentes de equipe, membros comuns, auditores), a lógica de negócio deve ser centralizada em Políticas de Acesso.
+
+Python
+from enum import Enum
+
+class Papel(str, Enum):
+    ADMIN = "ADMIN"
+    GERENTE = "GERENTE"
+    MEMBRO = "MEMBRO"
+    AUDITOR = "AUDITOR"
+
+class PoliticaPedido:
+    @staticmethod
+    def pode_visualizar(usuario: UsuarioAutenticado, pedido: Pedido) -> bool:
+        # Regra 1: Isolamento estrito de tenant (quebra imediata)
+        if pedido.tenant_id != usuario.tenant_id:
+            return False
+
+        # Regra 2: Administradores e Auditores têm visão global do tenant
+        if usuario.role in [Papel.ADMIN, Papel.AUDITOR]:
+            return True
+
+        # Regra 3: Gerentes visualizam pedidos do seu departamento/equipe
+        if usuario.role == Papel.GERENTE and pedido.departamento_id == usuario.departamento_id:
+            return True
+
+        # Regra 4: Membros comuns só acessam o que eles mesmos criaram
+        if usuario.role == Papel.MEMBRO and pedido.criador_id == usuario.id:
+            return True
+
+        return False
+
+    @staticmethod
+    def pode_editar(usuario: UsuarioAutenticado, pedido: Pedido) -> bool:
+        # Auditores podem ver, mas nunca editar
+        if usuario.role == Papel.AUDITOR:
+            return False
+        return PoliticaPedido.pode_visualizar(usuario, pedido) and usuario.role in [Papel.ADMIN, Papel.GERENTE]
+Implementação Integrada no Endpoint
+O fluxo une a extração segura do contexto, a busca escopada e a aplicação da política:
+
+Python
+from fastapi import APIRouter, Depends, HTTPException, status
+from uuid import UUID
+
+router = APIRouter()
+
+@router.get("/pedidos/{pedido_id}")
+def obter_pedido(
+    pedido_id: UUID,
+    usuario: UsuarioAutenticado = Depends(obter_usuario_sessao),
+    db: Session = Depends(obter_db)
+):
+    # Passo 1: Busca restrita ao tenant do usuário autenticado
+    pedido = db.query(Pedido).filter(
+        Pedido.id == str(pedido_id),
+        Pedido.tenant_id == usuario.tenant_id
+    ).first()
+
+    # Se não existe no tenant, retorne 404 para não vazar a existência do ID
+    if not pedido:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, 
+            detail="Pedido não encontrado."
+        )
+
+    # Passo 2: Avaliação granular do RBAC sobre a instância do objeto
+    if not PoliticaPedido.pode_visualizar(usuario, pedido):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="Permissões insuficientes para acessar este recurso."
+        )
+
+    return pedido
+Defesa em Profundidade: Row-Level Security (RLS) no Banco
+Para evitar que erros de desenvolvedores (como esquecer de incluir WHERE tenant_id = ...) gerem vulnerabilidades IDOR, pode-se delegar o isolamento ao próprio banco de dados (ex.: PostgreSQL com Row-Level Security):
+
+SQL
+-- Ativa RLS na tabela
+ALTER TABLE pedidos ENABLE ROW LEVEL SECURITY;
+
+-- Cria política vinculando a linha à variável de sessão da conexão
+CREATE POLICY isolamento_tenant_pedidos ON pedidos
+    USING (tenant_id = CURRENT_SETTING('app.current_tenant_id')::uuid);
+No backend, toda conexão define a variável antes de executar queries:
+
+Python
+# Executado automaticamente pelo middleware de conexão
+db.execute(text(f"SET LOCAL app.current_tenant_id = '{usuario.tenant_id}';"))
+Com o RLS ativado, mesmo uma consulta irrestrita como SELECT * FROM pedidos WHERE id = :id retornará nulo se o registro pertencer a outra empresa.
+
+Quer ver como configurar Row-Level Security (RLS) no PostgreSQL integrado ao SQLAlchemy?
+
+Sim
+Como configurar PostgreSQL Row-Level Security (RLS) integrado com SQLAlchemy no Python?
+
+A integração entre PostgreSQL Row-Level Security (RLS) e SQLAlchemy baseia-se na definição de parâmetros de configuração em nível de transação (SET LOCAL) no banco de dados. Dessa forma, as políticas do PostgreSQL filtram automaticamente as linhas acessíveis sem que você precise alterar manualmente cada consulta no ORM.
+
+1. Configuração no PostgreSQL
+No banco, habilite o RLS na tabela, force a política mesmo para o dono do esquema e utilize current_setting com o parâmetro missing_ok = true para evitar exceções quando a variável ainda não tiver sido definida.
+
+SQL
+-- 1. Criação da tabela
+CREATE TABLE documentos (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL,
+    titulo TEXT NOT NULL,
+    conteudo TEXT NOT NULL
+);
+
+-- 2. Ativação do RLS
+ALTER TABLE documentos ENABLE ROW LEVEL SECURITY;
+
+-- 3. Força RLS mesmo se a aplicação conectar como proprietária da tabela
+ALTER TABLE documentos FORCE ROW LEVEL SECURITY;
+
+-- 4. Criação da política de isolamento
+CREATE POLICY tenant_isolation_policy ON documentos
+    FOR ALL
+    USING (
+        tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+    )
+    WITH CHECK (
+        tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+    );
+USING: Determina quais linhas podem ser lidas (SELECT), atualizadas (UPDATE) ou excluídas (DELETE).
+
+WITH CHECK: Garante que novos registros (INSERT) ou alterações (UPDATE) pertençam obrigatoriamente ao tenant atual.
+
+2. Integração no SQLAlchemy (2.0)
+O ponto crítico de segurança ao trabalhar com pools de conexão (como o QueuePool padrão do SQLAlchemy) é utilizar SET LOCAL em vez de SET. O comando SET LOCAL limita o escopo da variável exclusivamente à transação ativa, sendo descartado no COMMIT ou ROLLBACK e impedindo vazamento de contexto entre conexões reaproveitadas.
+
+Python
+from contextlib import contextmanager
+from typing import Generator
+from uuid import UUID
+from sqlalchemy import create_engine, text, event, Column, String
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.orm import declarative_base, sessionmaker, Session
+
+Base = declarative_base()
+
+class Documento(Base):
+    __tablename__ = "documentos"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True)
+    tenant_id = Column(PG_UUID(as_uuid=True), nullable=False)
+    titulo = Column(String, nullable=False)
+    conteudo = Column(String, nullable=False)
+
+engine = create_engine("postgresql+psycopg2://app_user:senha@localhost/meubanco")
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+# Interceptador acionado logo após o início de cada transação (BEGIN)
+@event.listens_for(Session, "after_begin")
+def receive_after_begin(session, transaction, connection):
+    tenant_id = session.info.get("tenant_id")
+    if tenant_id:
+        connection.execute(
+            text("SET LOCAL app.current_tenant_id = :tenant_id"),
+            {"tenant_id": str(tenant_id)}
+        )
+3. Gerenciamento de Sessão com Contexto
+Crie um gerenciador de contexto ou gerador de dependência injetando o tenant_id diretamente no dicionário session.info:
+
+Python
+@contextmanager
+def get_tenant_db(tenant_id: UUID) -> Generator[Session, None, None]:
+    """Cria uma sessão isolada para o tenant informado."""
+    session = SessionLocal(info={"tenant_id": tenant_id})
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+Exemplo de Uso em Endpoints (FastAPI)
+Python
+from fastapi import FastAPI, Depends, Header, HTTPException
+from uuid import UUID
+
+app = FastAPI()
+
+def get_current_tenant_id(x_tenant_id: str = Header(...)) -> UUID:
+    try:
+        return UUID(x_tenant_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Tenant ID inválido")
+
+@app.get("/documentos")
+def listar_documentos(tenant_id: UUID = Depends(get_current_tenant_id)):
+    with get_tenant_db(tenant_id) as db:
+        # A query NÃO precisa de .filter(Documento.tenant_id == tenant_id)
+        # O PostgreSQL barra automaticamente registros de outros tenants no nível do disco
+        docs = db.query(Documento).all()
+        return [{"id": d.id, "titulo": d.titulo} for d in docs]
+Três Regras Críticas para Produção
+Evite o usuário postgres (Superuser): Por padrão, superusuários do PostgreSQL ignoram políticas de RLS, mesmo com FORCE ROW LEVEL SECURITY. Crie sempre um usuário dedicado para a aplicação (app_user).
+
+SET LOCAL é mandatório: Nunca use SET app.current_tenant_id = .... Se uma conexão do pool for reciclada após uma falha sem SET LOCAL, ela continuará vinculada ao tenant anterior, causando vazamento de dados (Connection Pool Poisoning).
+
+Crie índices compostos: Para manter a performance, crie índices que comecem pela coluna do tenant, como CREATE INDEX idx_documentos_tenant_id ON documentos(tenant_id);.
+
+Quer ver como tratar migrations no Alembic para tabelas com RLS habilitado?
+
+Sim
+Como gerenciar migrações com Alembic incluindo tabelas com Row-Level Security (RLS) no PostgreSQL?
+
+O Alembic não rastreia nativamente diretivas de Row-Level Security nem comandos CREATE POLICY na detecção automática (--autogenerate), pois esses recursos são específicos do PostgreSQL e não fazem parte do catálogo padrão de metadados do SQLAlchemy.
+
+Para gerenciar RLS no ciclo de vida de migrações, a abordagem padrão envolve a criação de funções utilitárias DDL, a inclusão explícita dessas diretivas nas migrações e a separação de papéis no banco.
+
+1. Funções Utilitárias para DDL de RLS
+Para evitar repetição de strings SQL em múltiplos arquivos de migração, defina helpers reutilizáveis (por exemplo, em um arquivo alembic/rls.py ou dentro do próprio env.py):
+
+Python
+# alembic/rls_helpers.py
+from alembic import op
+
+def enable_rls(table_name: str, force: bool = True):
+    op.execute(f"ALTER TABLE {table_name} ENABLE ROW LEVEL SECURITY;")
+    if force:
+        # Garante que o RLS seja aplicado mesmo para o proprietário da tabela
+        op.execute(f"ALTER TABLE {table_name} FORCE ROW LEVEL SECURITY;")
+
+def disable_rls(table_name: str):
+    op.execute(f"ALTER TABLE {table_name} NO FORCE ROW LEVEL SECURITY;")
+    op.execute(f"ALTER TABLE {table_name} DISABLE ROW LEVEL SECURITY;")
+
+def create_tenant_policy(
+    table_name: str,
+    policy_name: str,
+    tenant_column: str = "tenant_id",
+    setting_var: str = "app.current_tenant_id"
+):
+    sql = f"""
+    CREATE POLICY {policy_name} ON {table_name}
+        FOR ALL
+        USING ({tenant_column} = NULLIF(current_setting('{setting_var}', true), '')::uuid)
+        WITH CHECK ({tenant_column} = NULLIF(current_setting('{setting_var}', true), '')::uuid);
+    """
+    op.execute(sql)
+
+def drop_policy(table_name: str, policy_name: str):
+    op.execute(f"DROP POLICY IF EXISTS {policy_name} ON {table_name};")
+2. Estrutura do Arquivo de Migração
+Quando você gerar uma migração com alembic revision -m "create_documentos_table", inclua as chamadas do RLS no upgrade() e as remoções simétricas no downgrade():
+
+Python
+"""create documentos table with rls
+
+Revision ID: 3a1b2c4d5e6f
+Revises: 
+Create Date: 2026-10-07 21:45:00.000000
+"""
+from alembic import op
+import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
+
+# Importe os helpers criados
+from alembic.rls_helpers import enable_rls, disable_rls, create_tenant_policy, drop_policy
+
+revision = '3a1b2c4d5e6f'
+down_revision = None
+branch_labels = None
+depends_on = None
+
+def upgrade() -> None:
+    # 1. Criação padrão da tabela gerada pelo autogenerate
+    op.create_table(
+        'documentos',
+        sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column('tenant_id', postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column('titulo', sa.String(), nullable=False),
+        sa.Column('conteudo', sa.Text(), nullable=False)
+    )
+    op.create_index('ix_documentos_tenant_id', 'documentos', ['tenant_id'])
+
+    # 2. Ativação de RLS e aplicação da política
+    enable_rls('documentos', force=True)
+    create_tenant_policy(
+        table_name='documentos',
+        policy_name='tenant_isolation_policy',
+        tenant_column='tenant_id'
+    )
+
+def downgrade() -> None:
+    # 1. Remoção da política e desativação do RLS antes de dropar a tabela
+    drop_policy('documentos', 'tenant_isolation_policy')
+    disable_rls('documentos')
+    
+    # 2. Remoção dos índices e da tabela
+    op.drop_index('ix_documentos_tenant_id', table_name='documentos')
+    op.drop_table('documentos')
+3. Automação via alembic-utils (Alternativa)
+Se o projeto tiver muitas entidades e políticas que evoluem com frequência, a biblioteca de terceiros alembic-utils permite registrar objetos PGPolicy diretamente no código Python. Ela se conecta ao listener do autogenerate e detecta alterações automaticamente:
+
+Python
+# models.py ou policies.py
+from alembic_utils.pg_policy import PGPolicy
+
+documentos_tenant_policy = PGPolicy(
+    schema="public",
+    signature="tenant_isolation_policy",
+    on_entity="public.documentos",
+    definition="""
+    AS PERMISSIVE
+    FOR ALL
+    TO PUBLIC
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid)
+    """
+)
+No arquivo env.py do Alembic, basta registrar as entidades do alembic_utils:
+
+Python
+# alembic/env.py
+from alembic_utils.replaceable_entity import register_entities
+from models import documentos_tenant_policy
+
+register_entities([documentos_tenant_policy])
+Com isso, o comando alembic revision --autogenerate gera automaticamente operações op.create_entity e op.replace_entity quando a assinatura ou definição da política mudar.
+
+4. Cuidados Essenciais com Permissões e Execução
+Permissões do usuário de migração: O usuário configurado no sqlalchemy.url do alembic.ini precisa ter privilégios de DDL (OWNER da tabela ou SUPERUSER) para executar ALTER TABLE ... ENABLE ROW LEVEL SECURITY e CREATE POLICY.
+
+Migrações de dados (Data Migrations): Se uma migração futura precisar rodar um script INSERT, UPDATE ou migrar registros existentes entre tabelas com RLS ativo:
+
+Como a conexão do Alembic não terá uma sessão de tenant definida (app.current_tenant_id estará vazio), as políticas de RLS bloquearão ou ocultarão os dados.
+
+Solução: No script de migração de dados, execute previamente SET LOCAL app.current_tenant_id = '...' ou use temporariamente op.execute("ALTER TABLE documentos DISABLE ROW LEVEL SECURITY") durante a transação da migração, reativando-o ao final.
+
+Seed e Ambientes de Teste: O usuário comum da aplicação (app_user) deve receber apenas GRANT SELECT, INSERT, UPDATE, DELETE ON documentos TO app_user; e nunca deve ter o papel de proprietário da tabela, para não ter capacidade de desabilitar o RLS.
+
+Quer ver como escrever testes automatizados em pytest para validar o isolamento de tenants do RLS?
+
+Sim
+Como escrever testes automatizados em pytest para validar políticas de RLS e isolamento de tenant?
+
+Para testar Row-Level Security (RLS) de forma confiável com pytest, o ponto central é simular a perspectiva do usuário da aplicação (app_user), garantindo que o PostgreSQL execute as políticas em vez de ignorá-las como faria com um superusuário (postgres).
+
+A suíte de testes deve validar quatro cenários essenciais:
+
+Isolamento de leitura: Tenant A não visualiza registros do Tenant B.
+
+Isolamento de mutação: Tenant A não consegue atualizar nem excluir dados do Tenant B (as operações afetam 0 linhas sem disparar erro de sintaxe).
+
+Bloqueio de inserção forçada (WITH CHECK): Tenant A não consegue inserir registros apontando para o tenant_id do Tenant B (disparando violação de política).
+
+Contexto não autenticado: Consultas sem tenant definido retornam vazio por padrão.
+
+1. Configuração das Fixtures (conftest.py)
+As fixtures configuram uma conexão vinculada ao papel restrito da aplicação e geram sessões do SQLAlchemy com transações aninhadas (Savepoints) para isolar o estado de cada teste sem poluir o banco.
+
+Python
+# tests/conftest.py
+import uuid
+import pytest
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
+from models import Base, Documento
+
+# Conexão OBRIGATÓRIA com o usuário restrito da aplicação (NUNCA superuser)
+TEST_DATABASE_URL = "postgresql+psycopg2://app_user:senha_app@localhost:5432/meubanco_test"
+
+engine = create_engine(TEST_DATABASE_URL)
+TestSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+@pytest.fixture(scope="session")
+def setup_database():
+    """Garante tabelas criadas no banco de testes."""
+    # Executado tipicamente via migrações Alembic no pipeline CI/CD
+    yield engine
+    engine.dispose()
+
+@pytest.fixture
+def db_connection(setup_database):
+    """Mantém uma conexão aberta com transação base para rollback após cada teste."""
+    connection = setup_database.connect()
+    transaction = connection.begin()
+    yield connection
+    transaction.rollback()
+    connection.close()
+
+@pytest.fixture
+def tenant_factory(db_connection):
+    """Fábrica para gerar sessões configuradas para um tenant específico."""
+    def _create_session(tenant_id: uuid.UUID | None = None):
+        session = TestSessionLocal(bind=db_connection)
+        if tenant_id:
+            # Aplica o SET LOCAL no contexto da transação ativa
+            session.execute(
+                text("SET LOCAL app.current_tenant_id = :tid"),
+                {"tid": str(tenant_id)}
+            )
+        return session
+    return _create_session
+
+@pytest.fixture
+def tenant_alpha_id() -> uuid.UUID:
+    return uuid.uuid4()
+
+@pytest.fixture
+def tenant_beta_id() -> uuid.UUID:
+    return uuid.uuid4()
+2. Implementação dos Casos de Teste (test_rls_isolation.py)
+Python
+# tests/test_rls_isolation.py
+import uuid
+import pytest
+from sqlalchemy.exc import ProgrammingError, InternalError
+from models import Documento
+
+def test_tenant_nao_consegue_ler_dados_de_outro_tenant(
+    tenant_factory, tenant_alpha_id, tenant_beta_id
+):
+    session_alpha = tenant_factory(tenant_alpha_id)
+    session_beta = tenant_factory(tenant_beta_id)
+
+    # Tenant Alpha cria seu documento
+    doc_alpha = Documento(
+        id=uuid.uuid4(),
+        tenant_id=tenant_alpha_id,
+        titulo="Documento Confidencial Alpha",
+        conteudo="Dados do cliente Alpha"
+    )
+    session_alpha.add(doc_alpha)
+    session_alpha.flush()
+
+    # Tenant Beta cria seu documento
+    doc_beta = Documento(
+        id=uuid.uuid4(),
+        tenant_id=tenant_beta_id,
+        titulo="Documento Confidencial Beta",
+        conteudo="Dados do cliente Beta"
+    )
+    session_beta.add(doc_beta)
+    session_beta.flush()
+
+    # Validação sob a perspectiva do Tenant Alpha
+    documentos_visiveis_alpha = session_alpha.query(Documento).all()
+    ids_visiveis_alpha = [d.id for d in documentos_visiveis_alpha]
+
+    assert doc_alpha.id in ids_visiveis_alpha
+    assert doc_beta.id not in ids_visiveis_alpha
+    assert len(documentos_visiveis_alpha) == 1
+
+    # Validação direta por ID (tentativa explícita de IDOR)
+    doc_alheio = session_alpha.query(Documento).filter_by(id=doc_beta.id).first()
+    assert doc_alheio is None
+
+
+def test_tenant_nao_consegue_alterar_nem_excluir_dados_de_outro_tenant(
+    tenant_factory, tenant_alpha_id, tenant_beta_id
+):
+    session_alpha = tenant_factory(tenant_alpha_id)
+    session_beta = tenant_factory(tenant_beta_id)
+
+    # Tenant Beta registra um documento
+    doc_beta = Documento(
+        id=uuid.uuid4(),
+        tenant_id=tenant_beta_id,
+        titulo="Documento Original",
+        conteudo="Imutável por terceiros"
+    )
+    session_beta.add(doc_beta)
+    session_beta.flush()
+
+    # Tenant Alpha tenta sobrescrever o documento de Beta via UPDATE
+    linhas_afetadas = session_alpha.query(Documento)\
+        .filter_by(id=doc_beta.id)\
+        .update({"titulo": "Tentativa de Fraude"})
+    
+    # RLS mascara a linha: o PostgreSQL age como se o registro nem existisse
+    assert linhas_afetadas == 0
+
+    # Tenant Alpha tenta remover o documento de Beta via DELETE
+    linhas_deletadas = session_alpha.query(Documento)\
+        .filter_by(id=doc_beta.id)\
+        .delete()
+
+    assert linhas_deletadas == 0
+
+    # Confirmação sob a ótica de Beta: o registro permaneceu intacto
+    session_beta.refresh(doc_beta)
+    assert doc_beta.titulo == "Documento Original"
+
+
+def test_violacao_de_politica_ao_tentar_inserir_com_tenant_divergente(
+    tenant_factory, tenant_alpha_id, tenant_beta_id
+):
+    session_alpha = tenant_factory(tenant_alpha_id)
+
+    # Invasor logado como Alpha tenta forçar um payload com o tenant_id de Beta
+    doc_falso = Documento(
+        id=uuid.uuid4(),
+        tenant_id=tenant_beta_id,  # Mismatch em relação à sessão ativa
+        titulo="Injeção Indevida",
+        conteudo="Teste de bypass"
+    )
+    session_alpha.add(doc_falso)
+
+    # A cláusula WITH CHECK do PostgreSQL rejeita a transação no banco
+    with pytest.raises((ProgrammingError, InternalError)) as exc_info:
+        session_alpha.flush()
+
+    assert "new row violates row-level security policy" in str(exc_info.value).lower()
+
+
+def test_sessao_sem_tenant_definido_nao_expoe_registros(
+    tenant_factory, tenant_alpha_id
+):
+    session_alpha = tenant_factory(tenant_alpha_id)
+    doc_alpha = Documento(
+        id=uuid.uuid4(),
+        tenant_id=tenant_alpha_id,
+        titulo="Registro Alpha",
+        conteudo="Sensível"
+    )
+    session_alpha.add(doc_alpha)
+    session_alpha.flush()
+
+    # Sessão anônima / sem contexto inicializado
+    session_anonima = tenant_factory(tenant_id=None)
+    
+    registros = session_anonima.query(Documento).all()
+    assert len(registros) == 0
+Armadilhas Comuns na Execução dos Testes
+Uso de session.commit() vs Rollbacks: Não chame session.commit() se estiver utilizando uma transação base compartilhada na fixture db_connection. Em vez disso, use session.flush() para enviar o SQL ao PostgreSQL e avaliar as restrições do banco mantendo o controle do rollback no fim do teste.
+
+Pool de Conexões e SET LOCAL: SET LOCAL só opera se houver uma transação explícita aberta (BEGIN). Se o driver executar em modo autocommit, o PostgreSQL descartará o valor imediatamente e a query subsequente falhará ou retornará dados vazios.
+
+Tabelas Relacionadas (Foreign Keys): Se a tabela documentos tiver dependência com uma tabela categorias também protegida por RLS, certifique-se de que a categoria pertença ao mesmo tenant no seed, ou o PostgreSQL bloqueará a integridade referencial.
+
+Quer ver como integrar esses testes no pipeline de CI/CD do GitHub Actions com serviços do PostgreSQL?
+
+Sim
+Como configurar um workflow no GitHub Actions para rodar testes de integração com PostgreSQL e RLS?
+
+Para testar políticas de RLS no GitHub Actions, o pipeline precisa resolver uma exigência fundamental: separar os papéis do banco de dados. O usuário que executa as migrações precisa de privilégios de DDL/admin, enquanto a suíte do pytest deve rodar obrigatoriamente sob um usuário comum (app_user) para que o PostgreSQL não ignore as regras de segurança.
+
+Abaixo está a configuração completa do arquivo de workflow em .github/workflows/ci.yml.
+
+1. Workflow do GitHub Actions (.github/workflows/ci.yml)
+YAML
+name: Testes de Integracao RLS
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: meubanco_test
+          POSTGRES_USER: postgres_admin
+          POSTGRES_PASSWORD: admin_password_123
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout do repositorio
+        uses: actions/checkout@v4
+
+      - name: Instalar cliente PostgreSQL (psql)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y postgresql-client
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov alembic psycopg2-binary
+
+      - name: Criar usuario restrito da aplicacao
+        env:
+          PGPASSWORD: admin_password_123
+        run: |
+          psql -h localhost -U postgres_admin -d meubanco_test -c "
+            DO \$\$
+            BEGIN
+              IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'app_user') THEN
+                CREATE ROLE app_user WITH LOGIN PASSWORD 'app_password_123';
+              END IF;
+            END
+            \$\$;
+          "
+
+      - name: Executar migracoes (Alembic como Admin)
+        env:
+          # Administrador cria as tabelas, ativa o RLS e define as políticas
+          DATABASE_URL: postgresql+psycopg2://postgres_admin:admin_password_123@localhost:5432/meubanco_test
+        run: |
+          alembic upgrade head
+
+      - name: Conceder permissoes DML ao app_user
+        env:
+          PGPASSWORD: admin_password_123
+        run: |
+          psql -h localhost -U postgres_admin -d meubanco_test -c "
+            GRANT CONNECT ON DATABASE meubanco_test TO app_user;
+            GRANT USAGE ON SCHEMA public TO app_user;
+            GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_user;
+            ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_user;
+          "
+
+      - name: Rodar testes com pytest (como app_user)
+        env:
+          # A aplicacao roda os testes como usuario restrito
+          TEST_DATABASE_URL: postgresql+psycopg2://app_user:app_password_123@localhost:5432/meubanco_test
+        run: |
+          pytest -v --disable-warnings
+2. Pontos-chave da Configuração
+Container de Serviço com Healthcheck: A diretiva options: --health-cmd pg_isready garante que os passos de instalação e execução só iniciem quando o PostgreSQL estiver aceitando conexões no socket de rede.
+
+Ordem de Execução dos Privilégios:
+
+O usuário app_user é criado antes das migrações.
+
+O alembic upgrade head roda como postgres_admin, pois somente o proprietário ou superusuário pode rodar ALTER TABLE ... ENABLE ROW LEVEL SECURITY e CREATE POLICY.
+
+O script concede SELECT, INSERT, UPDATE, DELETE ao app_user sobre as tabelas recém-criadas.
+
+Variável de Ambiente Isolada: A fixture de teste (conftest.py) lê a variável TEST_DATABASE_URL contendo as credenciais de app_user. Caso alguém tente rodar os testes apontando para postgres_admin, o teste de isolamento falhará, pois superusuários ignoram políticas de RLS no PostgreSQL.   
+
+Quer ver como medir cobertura de testes específicos de segurança e RLS nos relatórios de CI?
+
+Sim
+Como gerar relatórios de cobertura de testes focados em políticas de segurança e RLS no GitHub Actions?
+
+Para mensurar a cobertura de testes focada em segurança e RLS no GitHub Actions, a estratégia mais eficaz combina três práticas:
+
+Marcação explícita de testes de segurança (pytest.mark.security).
+
+Definição de metas rígidas de cobertura (ex.: 100% de cobertura nos módulos de autorização e políticas).
+
+Publicação do relatório no resumo da execução do GitHub Actions via $GITHUB_STEP_SUMMARY.
+
+Além da cobertura de código Python (linhas executadas), é crucial incluir um meta-teste de integridade no PostgreSQL para auditar se todas as tabelas do banco possuem políticas RLS ativas.
+
+1. Configuração do pytest e Cobertura (pyproject.toml)
+Configure os marcadores e restrinja as métricas para os módulos críticos de segurança e isolamento de dados:
+
+Ini, TOML
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "security: Testes focados em RBAC, RLS e controle de acesso",
+    "integration: Testes de integração de banco de dados"
+]
+
+[tool.coverage.run]
+branch = true
+source = [
+    "app/security",
+    "app/database/rls",
+    "app/policies"
+]
+omit = [
+    "*/__init__.py",
+    "*/migrations/*"
+]
+
+[tool.coverage.report]
+fail_under = 100  # Falha a pipeline se o código de segurança tiver < 100% de cobertura
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError"
+]
+2. Meta-teste: Auditoria de Tabelas com RLS no PostgreSQL
+O pytest-cov afere apenas linhas de código Python. Para garantir que nenhuma tabela nova vá para produção sem RLS no banco, adicione um teste que consulta o catálogo interno do PostgreSQL (pg_tables e pg_class):
+
+Python
+# tests/test_rls_catalog_audit.py
+import pytest
+from sqlalchemy import text
+
+@pytest.mark.security
+def test_todas_as_tabelas_de_negocio_possuem_rls_ativo(tenant_factory):
+    """Garante que nenhuma tabela pública de dados esqueceu de ligar o RLS."""
+    session = tenant_factory()
+    
+    # Lista tabelas que NÃO possuem rowsecurity habilitado (ignorando alembic_version)
+    query = text("""
+        SELECT tablename 
+        FROM pg_tables 
+        JOIN pg_class ON pg_tables.tablename = pg_class.relname
+        WHERE schemaname = 'public'
+          AND tablename != 'alembic_version'
+          AND relrowsecurity = false;
+    """)
+    tabelas_sem_rls = session.execute(query).scalars().all()
+
+    assert len(tabelas_sem_rls) == 0, (
+        f"As seguintes tabelas estão desprotegidas sem RLS: {tabelas_sem_rls}"
+    )
+
+@pytest.mark.security
+def test_todas_as_tabelas_possuem_ao_menos_uma_politica(tenant_factory):
+    """Audita se as tabelas com RLS possuem regras ativas em pg_policy."""
+    session = tenant_factory()
+    
+    query = text("""
+        SELECT tablename
+        FROM pg_tables
+        WHERE schemaname = 'public'
+          AND tablename != 'alembic_version'
+          AND tablename NOT IN (
+              SELECT tablename FROM pg_policies WHERE schemaname = 'public'
+          );
+    """)
+    tabelas_sem_politicas = session.execute(query).scalars().all()
+
+    assert len(tabelas_sem_politicas) == 0, (
+        f"Tabelas com RLS ativo porém sem nenhuma diretiva POLICY: {tabelas_sem_politicas}"
+    )
+3. Workflow no GitHub Actions com Relatório Visual
+Adicione ao seu workflow steps para executar apenas a suíte de segurança, gerar o sumário em Markdown e disponibilizar o relatório HTML para download:
+
+YAML
+      - name: Executar testes de seguranca e gerar cobertura
+        env:
+          TEST_DATABASE_URL: postgresql+psycopg2://app_user:app_password_123@localhost:5432/meubanco_test
+        run: |
+          # Executa apenas os testes marcados como security
+          pytest -m security \
+            --cov=app/security \
+            --cov=app/policies \
+            --cov-report=term \
+            --cov-report=html:coverage_html \
+            --cov-report=xml:coverage.xml \
+            | tee pytest-output.txt
+
+      - name: Gerar Resumo no GitHub Step Summary
+        if: always()
+        run: |
+          echo "### 🛡️ Relatório de Cobertura de Segurança (RLS / Auth)" >> \$GITHUB_STEP_SUMMARY
+          echo "" >> \$GITHUB_STEP_SUMMARY
+          
+          # Extrai o resumo da tabela do pytest e formata em bloco Markdown
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          grep -A 20 "TOTAL" pytest-output.txt || cat pytest-output.txt >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> \$GITHUB_STEP_SUMMARY
+
+      - name: Publicar relatorio HTML como artefato
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: relatorio-cobertura-seguranca
+          path: coverage_html/
+          retention-days: 14
+Benefícios dessa Abordagem
+Fail-Fast no Pull Request: Se um desenvolvedor alterar uma política em app/policies ou criar um novo fluxo sem adicionar o teste de isolamento correspondente, o parâmetro fail_under = 100 bloqueia o merge automaticamente.
+
+Inspeção no Navegador: O artefato ZIP exportado pelo actions/upload-artifact@v4 contém o relatório detalhado linha por linha gerado pelo coverage html.
+
+Visibilidade sem sair do GitHub: O arquivo $GITHUB_STEP_SUMMARY injeta o resultado textual diretamente na tela de resumo do job, permitindo auditar o status da segurança sem precisar abrir os logs brutos.
+
+Quer ver como integrar a auditoria de migrações com Git Pre-commit Hooks para barrar tabelas sem RLS antes do push?
+
+Sim
+Como configurar pre-commit hooks para impedir commits de migrações sem Row-Level Security?
+
+Para impedir commits de migrações que criam tabelas sem proteção, configura-se um hook local no framework pre-commit que executa um script de validação estática sobre os arquivos staged em alembic/versions/.
+
+O linter verifica se qualquer chamada a op.create_table no bloco upgrade() é acompanhada pela ativação do RLS (enable_rls ou ENABLE ROW LEVEL SECURITY), oferecendo também uma flag de escape explícita (# rls: ignore) para tabelas públicas/estáticas (como listas de países ou planos).
+
+1. Script de Validação (scripts/check_migration_rls.py)
+Crie o script verificador que receberá os arquivos staged como argumentos e retornará código de saída 1 em caso de infração:
+
+Python
+#!/usr/bin/env python3
+import sys
+import re
+from pathlib import Path
+
+# Padrões para identificar criação de tabela e ativação de RLS
+CREATE_TABLE_PATTERN = re.compile(r"""op\.create_table\(\s*['"]([^'"]+)['"]""", re.MULTILINE)
+RLS_ENABLE_PATTERN = re.compile(r"""(enable_rls\(['"]([^'"]+)['"]|ENABLE\s+ROW\s+LEVEL\s+SECURITY)""", re.IGNORECASE)
+RLS_IGNORE_TAG = "# rls: ignore"
+
+def validar_arquivo_migracao(filepath: Path) -> list[str]:
+    erros = []
+    conteudo = filepath.read_text(encoding="utf-8")
+
+    # Se a migração inteira for marcada como isenta
+    if RLS_IGNORE_TAG in conteudo and "module" in conteudo:
+        return erros
+
+    # Extrai o corpo da função upgrade()
+    upgrade_match = re.search(r"def upgrade\(\).*?:(.*?)(def downgrade|\Z)", conteudo, re.DOTALL)
+    if not upgrade_match:
+        return erros
+
+    upgrade_body = upgrade_match.group(1)
+
+    # Identifica todas as tabelas criadas no upgrade()
+    tabelas_criadas = CREATE_TABLE_PATTERN.findall(upgrade_body)
+
+    for tabela in tabelas_criadas:
+        # Permite bypass por linha caso seja uma tabela intencionalmente pública
+        linha_tabela = [linha for linha in upgrade_body.splitlines() if f"'{tabela}'" in linha or f'"{tabela}"' in linha]
+        if any(RLS_IGNORE_TAG in linha for linha in linha_tabela):
+            continue
+
+        # Verifica se o RLS foi ativado para esta tabela específica ou de forma genérica
+        rls_ativado_para_tabela = (
+            re.search(rf"""enable_rls\(\s*['"]{tabela}['"]""", upgrade_body) or
+            re.search(rf"""ALTER\s+TABLE\s+{tabela}\s+ENABLE\s+ROW\s+LEVEL\s+SECURITY""", upgrade_body, re.IGNORECASE)
+        )
+
+        if not rls_ativado_para_tabela:
+            erros.append(
+                f"[{filepath.name}] A tabela '{tabela}' foi criada sem Row-Level Security ativo.\n"
+                f"   -> Chame 'enable_rls(\"{tabela}\")' ou adicione '# rls: ignore' se for estática."
+            )
+
+    return erros
+
+def main():
+    arquivos = [Path(arg) for arg in sys.argv[1:] if arg.endswith(".py")]
+    todos_erros = []
+
+    for arq in arquivos:
+        todos_erros.extend(validar_arquivo_migracao(arq))
+
+    if todos_erros:
+        print("\n❌ ERRO DE SEGURANÇA: Migração com tabela sem Row-Level Security detectada!\n")
+        for erro in todos_erros:
+            print(f"  • {erro}\n")
+        sys.exit(1)
+
+    sys.exit(0)
+
+if __name__ == "__main__":
+    main()
+2. Configuração do .pre-commit-config.yaml
+Adicione o hook local no arquivo de configuração do repositório:
+
+YAML
+repos:
+  - repo: local
+    hooks:
+      - id: check-alembic-rls
+        name: Validar Row-Level Security em migrações Alembic
+        entry: python scripts/check_migration_rls.py
+        language: python
+        # Executa apenas se houver alterações em arquivos dentro de alembic/versions/
+        files: ^alembic/versions/.*\.py$
+        pass_filenames: true
+3. Instalação e Teste
+Instale a ferramenta no ambiente e registre o hook no ciclo do Git:
+
+Bash
+pip install pre-commit
+pre-commit install
+Testando a validação em um commit:
+Ao criar uma migração sem RLS e tentar commitar:
+
+Bash
+git add alembic/versions/a1b2c3_nova_tabela.py
+git commit -m "feat: cria tabela de clientes"
+O terminal bloqueia o commit imediatamente com a saída:
+
+Plaintext
+Validar Row-Level Security em migrações Alembic..........Failed
+- hook id: check-alembic-rls
+- exit code: 1
+
+❌ ERRO DE SEGURANÇA: Migração com tabela sem Row-Level Security detectada!
+
+  • [a1b2c3_nova_tabela.py] A tabela 'clientes' foi criada sem Row-Level Security ativo.
+     -> Chame 'enable_rls("clientes")' ou adicione '# rls: ignore' se for estática.
+Para tabelas de catálogo público (ex.: paises), o desenvolvedor pode explicitamente ignorar a checagem adicionando o comentário no código da migração:
+
+Python
+op.create_table('paises', ...)  # rls: ignore
+Quer ver como rodar essa mesma checagem estática no GitHub Actions como um check obrigatório de PR?
+
+Sim
+Como configurar o pre-commit e essa verificação de RLS no GitHub Actions como check obrigatório de PR?
+
+Para rodar o pre-commit com a verificação de RLS no GitHub Actions e bloqueá-lo como status obrigatório, você precisa de duas etapas: criar o arquivo de workflow na pipeline e ativar a regra de proteção de branch na interface do repositório.
+
+1. Workflow do GitHub Actions (.github/workflows/lint.yml)
+Crie o arquivo .github/workflows/lint.yml. O workflow utiliza a action oficial pre-commit/action, que gerencia automaticamente o cache dos ambientes dos hooks e executa a validação apenas nos arquivos alterados no Pull Request:
+
+YAML
+name: Validacao de Codigo e Seguranca
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+  push:
+    branches: [ main ]
+
+jobs:
+  pre-commit:
+    name: pre-commit-checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do repositorio
+        uses: actions/checkout@v4
+        with:
+          # Garante o historico necessario para o pre-commit comparar os commits do PR
+          fetch-depth: 0
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Executar pre-commit
+        uses: pre-commit/action@v3.0.1
+        with:
+          # Executa especificamente no diff do PR para feedback rapido
+          extra_args: --show-diff-on-failure
+Atenção ao hook local: Como o script scripts/check_migration_rls.py foi declarado com entry: python scripts/..., ele rodará utilizando diretamente o interpretador Python configurado no step setup-python.
+
+2. Configurar o Check como Obrigatório no GitHub
+Para que o Pull Request não possa ser mergeado se o pre-commit falhar, configure uma regra de branch no GitHub:
+
+Opção A: Usando GitHub Rulesets (Método Moderno e Recomendado)
+No repositório, acesse Settings > Rules > Rulesets.
+
+Clique em New ruleset > New branch ruleset.
+
+Defina um nome (ex.: Protecao Producao) e mude o status para Active.
+
+Em Target branches, adicione Include default branch (ou especifique main).
+
+Na seção Rules, marque:
+
+Require status checks to pass.
+
+Clique em Add checks e pesquise pelo nome do job definido no workflow: pre-commit-checks.
+
+Marque a opção Require branches to be up to date before merging.
+
+Salve as alterações.
+
+Opção B: Usando Branch Protection Rules Clássica
+Acesse Settings > Branches.
+
+Em Branch protection rules, clique em Add branch protection rule.
+
+Em Branch name pattern, insira main.
+
+Marque Require status checks to pass before merging.
+
+Na barra de pesquisa, digite pre-commit-checks e selecione-o na lista.
+
+Clique em Save changes.
+
+3. Comportamento no Pull Request
+Quando um desenvolvedor abrir um PR com uma nova migração sem RLS:
+
+O job pre-commit-checks iniciará automaticamente.
+
+O script scripts/check_migration_rls.py detectará a criação de tabela desprotegida e encerrará com código de erro 1.
+
+A action exibirá a falha no log:
+
+Plaintext
+❌ ERRO DE SEGURANÇA: Migração com tabela sem Row-Level Security detectada!
+  • [d4e5f6_nova_tabela.py] A tabela 'clientes' foi criada sem Row-Level Security ativo.
+A interface do GitHub marcará o check em vermelho e bloqueará o botão de Merge Pull Request até que o desenvolvedor aplique enable_rls(...) ou # rls: ignore.
+
+Quer ver como fazer o GitHub Actions comentar automaticamente na linha exata da migração usando reviewdog?
+
+Sim
+Como configurar o reviewdog no GitHub Actions para comentar alertas de RLS diretamente nas linhas do Pull Request?
+
+O reviewdog processa a saída de linters e validadores no formato padrão de compilador (arquivo:linha:coluna: mensagem) e utiliza a API do GitHub para criar comentários de revisão inline diretamente no diff do Pull Request.
+
+Para integrá-lo à validação de RLS, são necessárias duas etapas: ajustar o script de verificação para apontar a linha exata da violação e configurar o workflow do GitHub Actions com o binário do reviewdog.
+
+1. Ajuste no Script Python (scripts/check_migration_rls.py)
+Atualize o script para rastrear o número da linha em que op.create_table foi chamada e imprimir as mensagens no formato caminho:linha:coluna: [nível] mensagem:
+
+Python
+#!/usr/bin/env python3
+import sys
+import re
+from pathlib import Path
+
+CREATE_TABLE_PATTERN = re.compile(r"""op\.create_table\(\s*['"]([^'"]+)['"]""")
+RLS_IGNORE_TAG = "# rls: ignore"
+
+def validar_arquivo(filepath: Path) -> list[str]:
+    erros = []
+    linhas = filepath.read_text(encoding="utf-8").splitlines()
+    conteudo_completo = "\n".join(linhas)
+
+    # Identifica o corpo da função upgrade()
+    upgrade_match = re.search(r"def upgrade\(\).*?:(.*?)(def downgrade|\Z)", conteudo_completo, re.DOTALL)
+    if not upgrade_match:
+        return erros
+    
+    upgrade_body = upgrade_match.group(1)
+
+    for num_linha, linha in enumerate(linhas, start=1):
+        match = CREATE_TABLE_PATTERN.search(linha)
+        if not match:
+            continue
+
+        tabela = match.group(1)
+
+        # Permite ignorar se a tag de escape estiver na mesma linha
+        if RLS_IGNORE_TAG in linha:
+            continue
+
+        # Verifica se o RLS foi ativado para esta tabela na função upgrade()
+        rls_ativado = (
+            re.search(rf"""enable_rls\(\s*['"]{tabela}['"]""", upgrade_body) or
+            re.search(rf"""ALTER\s+TABLE\s+{tabela}\s+ENABLE\s+ROW\s+LEVEL\s+SECURITY""", upgrade_body, re.IGNORECASE)
+        )
+
+        if not rls_ativado:
+            # Formato padrão: <arquivo>:<linha>:<coluna>: [error] <mensagem>
+            coluna = match.start() + 1
+            mensagem = (
+                f"Tabela '{tabela}' criada sem Row-Level Security (RLS). "
+                f"Adicione 'enable_rls(\"{tabela}\")' ou '{RLS_IGNORE_TAG}' se for pública."
+            )
+            erros.append(f"{filepath}:{num_linha}:{coluna}: [error] {mensagem}")
+
+    return erros
+
+def main():
+    arquivos = [Path(arg) for arg in sys.argv[1:] if arg.endswith(".py")]
+    falhas = []
+
+    for arq in arquivos:
+        falhas.extend(validar_arquivo(arq))
+
+    if falhas:
+        for falha in falhas:
+            print(falha)
+        sys.exit(1)
+
+    sys.exit(0)
+
+if __name__ == "__main__":
+    main()
+2. Workflow do GitHub Actions (.github/workflows/reviewdog_rls.yml)
+Configure o workflow com permissão de escrita em Pull Requests (pull-requests: write) e utilize o reviewdog/action-setup para instalar o utilitário:
+
+YAML
+name: RLS Reviewdog Inline
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  rls-inline-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do repositorio
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar reviewdog
+        uses: reviewdog/action-setup@v3
+        with:
+          reviewdog_version: latest
+
+      - name: Executar validacao e enviar comentarios inline
+        env:
+          REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 1. Identifica apenas arquivos de migracao alterados neste PR
+          ARQUIVOS_MIGRACAO=$(git diff --name-only origin/${{ github.base_ref }} HEAD -- 'alembic/versions/*.py' || true)
+
+          if [ -z "$ARQUIVOS_MIGRACAO" ]; then
+            echo "Nenhuma migração alterada no Pull Request."
+            exit 0
+          fi
+
+          # 2. Executa o linter e canaliza a saida diretamente para o reviewdog
+          python scripts/check_migration_rls.py $ARQUIVOS_MIGRACAO | reviewdog \
+            -efm="%f:%l:%c: [error] %m" \
+            -name="RLS Policy Checker" \
+            -reporter=github-pr-review \
+            -filter-mode=diff_context \
+            -fail-on-error=true \
+            -level=error
+Parâmetros Críticos do Reviewdog
+-reporter=github-pr-review: Publica comentários de revisão estruturados diretamente na aba Files changed do Pull Request, apontando para a linha específica do diff.
+
+-efm="%f:%l:%c: [error] %m": Especifica o padrão de captura (errorformat estilo Vim):
+
+%f: Caminho do arquivo.
+
+%l: Número da linha.
+
+%c: Coluna onde a instrução inicia.
+
+%m: Mensagem explicativa do erro.
+
+-filter-mode=diff_context: Garante que o bot comente apenas nas linhas que fazem parte das alterações do PR atual, evitando ruído sobre código legado.
+
+-fail-on-error=true: Encerra o step da pipeline com código de saída 1 quando forem encontradas violações, garantindo o bloqueio do merge no GitHub.
